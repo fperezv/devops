@@ -20,6 +20,10 @@ for arg in "$@"; do
       ENV="${arg#*=}"
       shift
       ;;
+    --namespace=*)
+      NAMESPACE="${arg#*=}"
+      shift
+      ;;
     -s)
       SAVE_LOGS=true
       shift
@@ -73,7 +77,7 @@ fi
 
 # --- Step 6: Validate prefix consistency ---
 FIRST_POD=$(echo "$PODS" | head -n 1)
-BASE_NAME="${FIRST_POD%-*}"         # everything before last hyphen
+BASE_NAME="${FIRST_POD%-*}"
 VALID_PATTERN="^${BASE_NAME}-[a-zA-Z0-9]{1,15}$"
 
 echo "🔎 Validating all pods match pattern: $VALID_PATTERN"
@@ -100,14 +104,13 @@ fi
 # --- Step 7: Stream logs (with optional save) ---
 LOG_DIR="$HOME/Workspace/logs"
 mkdir -p "$LOG_DIR"
-
 TIMESTAMP=$(date +"%d%m%Y%H%M%S")
 
 echo "📦 Streaming logs from valid pods..."
 while IFS= read -r POD; do
   echo "📄 Streaming logs for pod: $POD"
   if $SAVE_LOGS; then
-    SHORT_NAME="${POD%-*}"  # Pod name before random ID
+    SHORT_NAME="${POD%-*}"
     LOG_FILE="$LOG_DIR/${SHORT_NAME}-${ENV}-${TIMESTAMP}.log"
     echo "💾 Saving logs to: $LOG_FILE"
     kubectl logs -n "$NAMESPACE" -f "$POD" | tee -a "$LOG_FILE" &
@@ -116,5 +119,4 @@ while IFS= read -r POD; do
   fi
 done <<< "$PODS"
 
-# Wait for all background log streams
 wait
