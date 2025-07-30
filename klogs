@@ -1,0 +1,120 @@
+#!/bin/bash
+
+# Exit immediately on error
+set -e
+
+# --- Step 0: Defaults ---
+NAMESPACE="identity"
+ENV=""
+PREFIX=""
+SAVE_LOGS=false
+
+# --- Step 1: Parse arguments ---
+for arg in "$@"; do
+  case $arg in
+    --prefix=*)
+      PREFIX="${arg#*=}"
+      shift
+      ;;
+    --env=*)
+      ENV="${arg#*=}"
+      shift
+      ;;
+    -s)
+      SAVE_LOGS=true
+      shift
+      ;;
+    *)
+      echo "❌ Unknown argument: $arg"
+      exit 1
+      ;;
+  esac
+done
+
+# --- Step 2: Validate required arguments ---
+if [[ -z "$PREFIX" ]]; then
+  echo "❌ Missing required argument: --prefix"
+  exit 1
+fi
+
+# --- Step 3: Set Azure environment ---
+export AZURE_CONFIG_DIR="$HOME/.azure-bp"
+echo "🏦 Azure environment switched to Banco Pichincha (AZURE_CONFIG_DIR=$AZURE_CONFIG_DIR)"
+
+# --- Step 4: Handle --env (optional) ---
+if [[ -n "$ENV" ]]; then
+  case "$ENV" in
+    dev)
+      CONTEXT="aks-dev-coe-seguridad"
+      ;;
+    test)
+      CONTEXT="aks-test-coe-seguridad"
+      ;;
+    prod)
+      CONTEXT="aks-prod-coe-seguridad"
+      ;;
+    *)
+      echo "❌ Invalid --env value. Allowed: dev, test, prod"
+      exit 1
+      ;;
+  esac
+  echo "🔄 Switching Kubernetes context to: $CONTEXT"
+  kubectl config use-context "$CONTEXT"
+fi
+
+# --- Step 5: List matching pods ---
+echo "🔍 Searching for pods in namespace '$NAMESPACE' with prefix '${PREFIX}-'..."
+PODS=$(kubectl get pods -n "$NAMESPACE" --no-headers -o custom-columns=":metadata.name" | grep "${PREFIX}-" || true)
+
+if [ -z "$PODS" ]; then
+  echo "⚠️ No pods found with prefix '${PREFIX}-' in namespace '$NAMESPACE'."
+  exit 1
+fi
+
+# --- Step 6: Validate prefix consistency ---
+FIRST_POD=$(echo "$PODS" | head -n 1)
+BASE_NAME="${FIRST_POD%-*}"         # everything before last hyphen
+VALID_PATTERN="^${BASE_NAME}-[a-zA-Z0-9]{1,15}$"
+
+echo "🔎 Validating all pods match pattern: $VALID_PATTERN"
+
+ALL_VALID=true
+INVALID_PODS=()
+
+while IFS= read -r POD; do
+  if [[ ! "$POD" =~ $VALID_PATTERN ]]; then
+    INVALID_PODS+=("$POD")
+    ALL_VALID=false
+  fi
+done <<< "$PODS"
+
+if [ "$ALL_VALID" = false ]; then
+  echo "❌ The following pods do NOT match the expected pattern based on first pod '$FIRST_POD':"
+  for pod in "${INVALID_PODS[@]}"; do
+    echo " - $pod"
+  done
+  echo "🚫 Aborting log stream."
+  exit 1
+fi
+
+# --- Step 7: Stream logs (with optional save) ---
+LOG_DIR="$HOME/Workspace/logs"
+mkdir -p "$LOG_DIR"
+
+TIMESTAMP=$(date +"%d%m%Y%H%M%S")
+
+echo "📦 Streaming logs from valid pods..."
+while IFS= read -r POD; do
+  echo "📄 Streaming logs for pod: $POD"
+  if $SAVE_LOGS; then
+    SHORT_NAME="${POD%-*}"  # Pod name before random ID
+    LOG_FILE="$LOG_DIR/${SHORT_NAME}-${ENV}-${TIMESTAMP}.log"
+    echo "💾 Saving logs to: $LOG_FILE"
+    kubectl logs -n "$NAMESPACE" -f "$POD" | tee -a "$LOG_FILE" &
+  else
+    kubectl logs -n "$NAMESPACE" -f "$POD" &
+  fi
+done <<< "$PODS"
+
+# Wait for all background log streams
+wait
