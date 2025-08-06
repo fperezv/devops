@@ -3,13 +3,13 @@
 # Exit immediately on error
 set -e
 
-# --- Step 0: Defaults ---
+# --- Defaults ---
 NAMESPACE="identity"
 ENV=""
 PREFIX=""
 SAVE_LOGS=false
 
-# --- Step 1: Parse arguments ---
+# --- Parse arguments ---
 for arg in "$@"; do
   case $arg in
     --prefix=*)
@@ -35,17 +35,34 @@ for arg in "$@"; do
   esac
 done
 
-# --- Step 2: Validate required arguments ---
+# --- Validate required arguments ---
 if [[ -z "$PREFIX" ]]; then
   echo "❌ Missing required argument: --prefix"
   exit 1
 fi
 
-# --- Step 3: Set Azure environment ---
+# ---  Check kubectl session ---
+echo "🔍 Checking kubectl session in namespace '$NAMESPACE'..."
+if ! kubectl auth can-i get pods -n "$NAMESPACE" &>/dev/null; then
+  echo "⚠️ No valid kubectl session detected. Attempting Azure login..."
+  az login || { echo "❌ Azure login failed. Aborting."; exit 1; }
+
+  # Re-check session
+  if ! kubectl auth can-i get pods -n "$NAMESPACE" &>/dev/null; then
+    echo "❌ kubectl session is still invalid after az login. Aborting."
+    exit 1
+  else
+    echo "✅ kubectl session is now valid."
+  fi
+else
+  echo "✅ kubectl session is valid for namespace '$NAMESPACE'."
+fi
+
+# --- Set Azure environment ---
 export AZURE_CONFIG_DIR="$HOME/.azure-bp"
 echo "🏦 Azure environment switched to Banco Pichincha (AZURE_CONFIG_DIR=$AZURE_CONFIG_DIR)"
 
-# --- Step 4: Handle --env (optional) ---
+# --- Handle --env (optional) ---
 if [[ -n "$ENV" ]]; then
   case "$ENV" in
     dev)
@@ -66,7 +83,7 @@ if [[ -n "$ENV" ]]; then
   kubectl config use-context "$CONTEXT"
 fi
 
-# --- Step 5: List matching pods ---
+# --- List matching pods ---
 echo "🔍 Searching for pods in namespace '$NAMESPACE' with prefix '${PREFIX}-'..."
 PODS=$(kubectl get pods -n "$NAMESPACE" --no-headers -o custom-columns=":metadata.name" | grep "${PREFIX}-" || true)
 
@@ -75,7 +92,7 @@ if [ -z "$PODS" ]; then
   exit 1
 fi
 
-# --- Step 6: Validate prefix consistency ---
+# --- Validate prefix consistency ---
 FIRST_POD=$(echo "$PODS" | head -n 1)
 BASE_NAME="${FIRST_POD%-*}"
 VALID_PATTERN="^${BASE_NAME}-[a-zA-Z0-9]{1,15}$"
@@ -101,7 +118,7 @@ if [ "$ALL_VALID" = false ]; then
   exit 1
 fi
 
-# --- Step 7: Stream logs (with optional save) ---
+# --- Stream logs (with optional save) ---
 LOG_DIR="$HOME/Workspace/logs"
 mkdir -p "$LOG_DIR"
 TIMESTAMP=$(date +"%d%m%Y%H%M%S")
